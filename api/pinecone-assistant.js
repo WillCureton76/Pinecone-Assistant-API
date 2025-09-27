@@ -1,3 +1,5 @@
+import FormData from "form-data";
+
 const API_VERSION = process.env.PINECONE_API_VERSION || "2025-01";
 const HOST_CACHE_TTL_MS = 5 * 60 * 1000;
 const hostCache = new Map();
@@ -22,7 +24,11 @@ export default async function handler(req, res) {
 
   let body = req.body;
   if (typeof body === "string") {
-    try { body = JSON.parse(body); } catch { return res.status(400).json({ success: false, error: "Invalid JSON body" }); }
+    try {
+      body = JSON.parse(body);
+    } catch {
+      return res.status(400).json({ success: false, error: "Invalid JSON body" });
+    }
   }
 
   const { action, assistant_name, assistant_host, data = {}, assistant_id } = body || {};
@@ -71,8 +77,8 @@ async function getAssistantBase(assistantName) {
     method: "GET",
     headers: {
       "Api-Key": process.env.PINECONE_API_KEY,
-      "X-Pinecone-API-Version": API_VERSION
-    }
+      "X-Pinecone-API-Version": API_VERSION,
+    },
   });
   if (!resp.ok) throw enrich(resp, "Failed to describe assistant (host discovery)");
   const data = await resp.json();
@@ -87,18 +93,18 @@ async function chatWithAssistant(base, assistantName, {
   model = "gpt-4o",
   filter,
   json_response,
-  stream = false
+  stream = false,
 } = {}) {
   const body = {
     messages: [
       ...context,
-      message ? { role: "user", content: message } : null
+      message ? { role: "user", content: message } : null,
     ].filter(Boolean),
     model,
     stream,
     ...(filter ? { filter } : {}),
     ...(json_response ? { json_response: true } : {}),
-    include_highlights: true
+    include_highlights: true,
   };
 
   const resp = await doFetch(`${base}/chat/${encodeURIComponent(assistantName)}`, {
@@ -106,9 +112,9 @@ async function chatWithAssistant(base, assistantName, {
     headers: {
       "Api-Key": process.env.PINECONE_API_KEY,
       "Content-Type": "application/json",
-      "X-Pinecone-API-Version": API_VERSION
+      "X-Pinecone-API-Version": API_VERSION,
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
   });
 
   const data = await resp.json();
@@ -116,7 +122,7 @@ async function chatWithAssistant(base, assistantName, {
     response: data.message?.content ?? "",
     citations: data.citations ?? [],
     usage: data.usage ?? {},
-    model: data.model
+    model: data.model,
   };
 }
 
@@ -126,30 +132,37 @@ async function storeMemory(base, assistantName, { content, metadata = {}, multim
   const metaOut = {
     ...metadata,
     stored_at: new Date().toISOString(),
-    type: metadata?.type || "memory"
+    type: metadata?.type || "memory",
   };
 
   const qs = new URLSearchParams();
   if (Object.keys(metaOut).length) {
-    qs.set("metadata", encodeURIComponent(JSON.stringify(metaOut)));
+    qs.set("metadata", JSON.stringify(metaOut)); // ✅ safe with URLSearchParams
   }
   if (typeof multimodal === "boolean") {
     qs.set("multimodal", String(multimodal));
   }
 
+  // Use form-data library for robust multipart
   const form = new FormData();
-  form.append("file", new Blob([content], { type: "text/plain" }), `memory_${Date.now()}.txt`);
+  form.append("file", Buffer.from(content), {
+    filename: `memory_${Date.now()}.txt`,
+    contentType: "text/plain",
+  });
 
-  const url = `${base}/files/${encodeURIComponent(assistantName)}${qs.toString() ? '?' + qs.toString() : ''}`;
+  const url = `${base}/files/${encodeURIComponent(assistantName)}${qs.toString() ? "?" + qs.toString() : ""}`;
 
   const resp = await doFetch(url, {
     method: "POST",
     headers: {
       "Api-Key": process.env.PINECONE_API_KEY,
-      "X-Pinecone-API-Version": API_VERSION
+      "X-Pinecone-API-Version": API_VERSION,
+      ...form.getHeaders(), // includes boundary
     },
-    body: form
+    body: form,
   });
+
+  if (!resp.ok) throw new Error(`Upload failed: ${resp.status} ${resp.statusText}`);
 
   const data = await resp.json();
   return {
@@ -157,7 +170,7 @@ async function storeMemory(base, assistantName, { content, metadata = {}, multim
     file_name: data.name,
     status: data.status,
     metadata: data.metadata,
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   };
 }
 
@@ -176,23 +189,23 @@ async function searchMemories(base, assistantName, { query, messages, top_k, fil
     headers: {
       "Api-Key": process.env.PINECONE_API_KEY,
       "Content-Type": "application/json",
-      "X-Pinecone-API-Version": API_VERSION
+      "X-Pinecone-API-Version": API_VERSION,
     },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
   });
 
   const data = await resp.json();
   return {
     snippets: data.snippets ?? [],
     usage: data.usage ?? {},
-    id: data.id
+    id: data.id,
   };
 }
 
 async function doFetch(url, opts, retries = 2) {
   const resp = await fetch(url, opts);
   if (resp.status === 429 && retries > 0) {
-    await new Promise(r => setTimeout(r, (3 - retries) * 500));
+    await new Promise((r) => setTimeout(r, (3 - retries) * 500));
     return doFetch(url, opts, retries - 1);
   }
   if (!resp.ok) throw enrich(resp);
