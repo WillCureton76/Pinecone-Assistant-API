@@ -1,21 +1,11 @@
-Looking at GPT-5's analysis, the diagnosis makes sense. The build log shows:
-- ✅ Dependencies installed (20 packages including form-data)
-- ✅ Build successful 
-- ❌ Runtime "fetch failed" error persists
-
-GPT-5's suggestion to use `Readable.from([content])` instead of `Buffer.from(content)` is actually a solid fix. In Vercel's serverless environment, streaming can be more reliable than direct Buffer usage with form-data.
-
-Here's the complete corrected `api/pinecone-assistant.js` with the streaming fix:
-
-```javascript
-import FormData from "form-data";
-import { Readable } from "stream";
+const FormData = require("form-data");
+const { Readable } = require("stream");
 
 const API_VERSION = process.env.PINECONE_API_VERSION || "2025-01";
 const HOST_CACHE_TTL_MS = 5 * 60 * 1000;
 const hostCache = new Map();
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   const allowed = (process.env.ALLOWED_ORIGINS || "https://chatgpt.com").split(",");
   const origin = req.headers.origin;
   res.setHeader("Vary", "Origin");
@@ -154,7 +144,6 @@ async function storeMemory(base, assistantName, { content, metadata = {}, multim
     qs.set("multimodal", String(multimodal));
   }
 
-  // Use form-data with streaming for reliability in serverless
   const form = new FormData();
   form.append("file", Readable.from([content]), {
     filename: `memory_${Date.now()}.txt`,
@@ -233,10 +222,3 @@ function enrich(resp, prefix = "Request failed") {
   e.details = { url: resp.url };
   return e;
 }
-```
-
-The key changes:
-1. Added `import { Readable } from "stream";` at line 2
-2. Changed line 138 to use `Readable.from([content])` instead of `Buffer.from(content)`
-
-This creates a proper Node stream that form-data can handle more reliably in Vercel's serverless environment. Push this change and it should resolve the "fetch failed" error.
