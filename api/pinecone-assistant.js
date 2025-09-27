@@ -1,12 +1,8 @@
-// api/pinecone-assistant.js
-// Node 18+ environment (Vercel): global fetch, FormData, Blob are available.
-
-const API_VERSION = process.env.PINECONE_API_VERSION || "2025-01"; // pin to a stable version
-const HOST_CACHE_TTL_MS = 5 * 60 * 1000; // cache assistant host for 5 minutes
-const hostCache = new Map(); // assistant_name -> { host, expiresAt }
+const API_VERSION = process.env.PINECONE_API_VERSION || "2025-01";
+const HOST_CACHE_TTL_MS = 5 * 60 * 1000;
+const hostCache = new Map();
 
 export default async function handler(req, res) {
-  // CORS (tighten for prod)
   const allowed = (process.env.ALLOWED_ORIGINS || "https://chatgpt.com").split(",");
   const origin = req.headers.origin;
   res.setHeader("Vary", "Origin");
@@ -19,7 +15,6 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ success: false, error: "Method not allowed" });
 
-  // Optional bearer auth to lock down the endpoint (set MONEYPENNY_AUTH_TOKEN in Vercel)
   const AUTH_TOKEN = process.env.MONEYPENNY_AUTH_TOKEN;
   if (AUTH_TOKEN && req.headers.authorization !== `Bearer ${AUTH_TOKEN}`) {
     return res.status(401).json({ success: false, error: "Unauthorized" });
@@ -31,7 +26,6 @@ export default async function handler(req, res) {
   }
 
   const { action, assistant_name, assistant_host, data = {}, assistant_id } = body || {};
-  // Back-compat: accept assistant_id but use assistant_name everywhere.
   const name = assistant_name || assistant_id;
   if (!name) return res.status(400).json({ success: false, error: "assistant_name is required" });
 
@@ -72,7 +66,6 @@ async function getAssistantBase(assistantName) {
   const cached = hostCache.get(assistantName);
   if (cached && cached.expiresAt > now) return `https://${cached.host}/assistant`;
 
-  // Admin plane: describe assistant → returns { host }
   const url = `https://api.pinecone.io/assistant/assistants/${encodeURIComponent(assistantName)}`;
   const resp = await fetch(url, {
     method: "GET",
@@ -88,7 +81,6 @@ async function getAssistantBase(assistantName) {
   return `https://${data.host}/assistant`;
 }
 
-// ---------- chat ----------
 async function chatWithAssistant(base, assistantName, {
   message,
   context = [],
@@ -106,7 +98,7 @@ async function chatWithAssistant(base, assistantName, {
     stream,
     ...(filter ? { filter } : {}),
     ...(json_response ? { json_response: true } : {}),
-    include_highlights: true // helpful for trust & explainability
+    include_highlights: true
   };
 
   const resp = await doFetch(`${base}/chat/${encodeURIComponent(assistantName)}`, {
@@ -128,7 +120,6 @@ async function chatWithAssistant(base, assistantName, {
   };
 }
 
-// ---------- store (file upload) ----------
 async function storeMemory(base, assistantName, { content, metadata = {}, multimodal } = {}) {
   if (!content) throw new Error("store: 'content' is required");
 
@@ -138,15 +129,20 @@ async function storeMemory(base, assistantName, { content, metadata = {}, multim
     type: metadata?.type || "memory"
   };
 
-  // metadata and multimodal go in the QUERY STRING (per docs)
   const qs = new URLSearchParams();
-  if (Object.keys(metaOut).length) qs.set("metadata", JSON.stringify(metaOut));
-  if (typeof multimodal === "boolean") qs.set("multimodal", String(multimodal));
+  if (Object.keys(metaOut).length) {
+    qs.set("metadata", encodeURIComponent(JSON.stringify(metaOut)));
+  }
+  if (typeof multimodal === "boolean") {
+    qs.set("multimodal", String(multimodal));
+  }
 
   const form = new FormData();
   form.append("file", new Blob([content], { type: "text/plain" }), `memory_${Date.now()}.txt`);
 
-  const resp = await doFetch(`${base}/files/${encodeURIComponent(assistantName)}?${qs}`, {
+  const url = `${base}/files/${encodeURIComponent(assistantName)}${qs.toString() ? '?' + qs.toString() : ''}`;
+
+  const resp = await doFetch(url, {
     method: "POST",
     headers: {
       "Api-Key": process.env.PINECONE_API_KEY,
@@ -165,9 +161,7 @@ async function storeMemory(base, assistantName, { content, metadata = {}, multim
   };
 }
 
-// ---------- search (Context API) ----------
 async function searchMemories(base, assistantName, { query, messages, top_k, filter } = {}) {
-  // Exactly one of query or messages
   const body =
     messages?.length ? { messages } :
     query ? { query } :
@@ -195,11 +189,10 @@ async function searchMemories(base, assistantName, { query, messages, top_k, fil
   };
 }
 
-// ---------- fetch helper with basic 429 backoff ----------
 async function doFetch(url, opts, retries = 2) {
   const resp = await fetch(url, opts);
   if (resp.status === 429 && retries > 0) {
-    await new Promise(r => setTimeout(r, (3 - retries) * 500)); // 0.5s, then 1s
+    await new Promise(r => setTimeout(r, (3 - retries) * 500));
     return doFetch(url, opts, retries - 1);
   }
   if (!resp.ok) throw enrich(resp);
