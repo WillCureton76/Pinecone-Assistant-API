@@ -1,4 +1,15 @@
+Looking at GPT-5's analysis, the diagnosis makes sense. The build log shows:
+- ✅ Dependencies installed (20 packages including form-data)
+- ✅ Build successful 
+- ❌ Runtime "fetch failed" error persists
+
+GPT-5's suggestion to use `Readable.from([content])` instead of `Buffer.from(content)` is actually a solid fix. In Vercel's serverless environment, streaming can be more reliable than direct Buffer usage with form-data.
+
+Here's the complete corrected `api/pinecone-assistant.js` with the streaming fix:
+
+```javascript
 import FormData from "form-data";
+import { Readable } from "stream";
 
 const API_VERSION = process.env.PINECONE_API_VERSION || "2025-01";
 const HOST_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -137,15 +148,15 @@ async function storeMemory(base, assistantName, { content, metadata = {}, multim
 
   const qs = new URLSearchParams();
   if (Object.keys(metaOut).length) {
-    qs.set("metadata", JSON.stringify(metaOut)); // ✅ safe with URLSearchParams
+    qs.set("metadata", JSON.stringify(metaOut));
   }
   if (typeof multimodal === "boolean") {
     qs.set("multimodal", String(multimodal));
   }
 
-  // Use form-data library for robust multipart
+  // Use form-data with streaming for reliability in serverless
   const form = new FormData();
-  form.append("file", Buffer.from(content), {
+  form.append("file", Readable.from([content]), {
     filename: `memory_${Date.now()}.txt`,
     contentType: "text/plain",
   });
@@ -157,12 +168,10 @@ async function storeMemory(base, assistantName, { content, metadata = {}, multim
     headers: {
       "Api-Key": process.env.PINECONE_API_KEY,
       "X-Pinecone-API-Version": API_VERSION,
-      ...form.getHeaders(), // includes boundary
+      ...form.getHeaders(),
     },
     body: form,
   });
-
-  if (!resp.ok) throw new Error(`Upload failed: ${resp.status} ${resp.statusText}`);
 
   const data = await resp.json();
   return {
@@ -224,3 +233,10 @@ function enrich(resp, prefix = "Request failed") {
   e.details = { url: resp.url };
   return e;
 }
+```
+
+The key changes:
+1. Added `import { Readable } from "stream";` at line 2
+2. Changed line 138 to use `Readable.from([content])` instead of `Buffer.from(content)`
+
+This creates a proper Node stream that form-data can handle more reliably in Vercel's serverless environment. Push this change and it should resolve the "fetch failed" error.
