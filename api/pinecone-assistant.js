@@ -2,7 +2,6 @@ const API_VERSION = process.env.PINECONE_API_VERSION || "2025-01";
 const HOST_CACHE_TTL_MS = 5 * 60 * 1000;
 const hostCache = new Map();
 
-// Use module.exports to avoid ESM issues in Vercel
 module.exports = async function handler(req, res) {
   // CORS
   const allowed = (process.env.ALLOWED_ORIGINS || "https://chatgpt.com").split(",");
@@ -110,8 +109,13 @@ async function getAssistantBase(assistantName) {
   if (!resp.ok) throw enrich(resp, "Failed to describe assistant (host discovery)");
   const data = await resp.json();
   if (!data.host) throw new Error("Assistant response missing 'host'");
-  hostCache.set(assistantName, { host: data.host, expiresAt: now + HOST_CACHE_TTL_MS });
-  return `https://${data.host}/assistant`;
+  
+  // Fix: Check if host already includes https://
+  const hostUrl = data.host.startsWith('http') ? data.host : `https://${data.host}`;
+  const fullBase = `${hostUrl}/assistant`;
+  
+  hostCache.set(assistantName, { host: fullBase, expiresAt: now + HOST_CACHE_TTL_MS });
+  return fullBase;
 }
 
 /* ---------- Runtime ---------- */
@@ -233,7 +237,7 @@ async function deleteFile(base, assistantName, fileId) {
 async function doFetch(url, opts, retries = 2) {
   const resp = await fetch(url, opts);
   if (resp.status === 429 && retries > 0) {
-    await new Promise((r) => setTimeout(r, (3 - retries) * 500));
+    await new Promise(r => setTimeout(r, (3 - retries) * 500));
     return doFetch(url, opts, retries - 1);
   }
   if (!resp.ok) throw enrich(resp);
