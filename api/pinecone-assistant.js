@@ -89,14 +89,13 @@ module.exports = async function handler(req, res) {
 /* ---------- Helpers ---------- */
 
 function normalizeAssistantBase(host) {
-  const clean = host.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-  return `https://${clean}/assistant`;
+  return host.startsWith("http") ? host : `https://${host}`;
 }
 
 async function getAssistantBase(assistantName) {
   const now = Date.now();
   const cached = hostCache.get(assistantName);
-  if (cached && cached.expiresAt > now) return `https://${cached.host}/assistant`;
+  if (cached && cached.expiresAt > now) return cached.host;
 
   const url = `https://api.pinecone.io/assistant/assistants/${encodeURIComponent(assistantName)}`;
   const resp = await fetch(url, {
@@ -109,11 +108,11 @@ async function getAssistantBase(assistantName) {
   if (!resp.ok) throw enrich(resp, "Failed to describe assistant (host discovery)");
   const data = await resp.json();
   if (!data.host) throw new Error("Assistant response missing 'host'");
-  
-  // Fix: Check if host already includes https://
-  const hostUrl = data.host.startsWith('http') ? data.host : `https://${data.host}`;
+
+  // Fix: handle host with or without scheme
+  const hostUrl = data.host.startsWith("http") ? data.host : `https://${data.host}`;
   const fullBase = `${hostUrl}/assistant`;
-  
+
   hostCache.set(assistantName, { host: fullBase, expiresAt: now + HOST_CACHE_TTL_MS });
   return fullBase;
 }
